@@ -6,13 +6,35 @@
  * - Renderização de cards de alta precisão com ícones SVG vetoriais
  */
 
+// Segurança (anti-CSRF): toda chamada à nossa API leva um cabeçalho personalizado,
+// que sites de terceiros não conseguem enviar. Também tratamos 401 (sem e-mail) e 429 (limite).
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input.url;
+    const isApi = url.startsWith("/api/");
+    if (isApi) {
+        init.headers = { ...(init.headers || {}), "X-Requested-With": "PriceRadar" };
+    }
+    const response = await nativeFetch(input, init);
+    if (isApi && response.status === 401) {
+        showToast("Identifique-se", "Informe seu e-mail para continuar.", "info");
+        openSettingsModal();
+    }
+    if (isApi && response.status === 429) {
+        const body = await response.clone().json().catch(() => ({}));
+        showToast("Calma aí", body.error || "Muitas tentativas. Aguarde um instante.", "error");
+    }
+    return response;
+};
+
 let appState = {
     products: [],
     settings: {},
     stats: { total_products: 0, deals_count: 0, total_savings: 0 },
     currentFilter: "all",
     previewedData: null,
-    lastAlertEmail: null
+    lastAlertEmail: null,
+    userEmail: null
 };
 
 let priceChartInstance = null;
@@ -59,7 +81,6 @@ function bindRangeAndNumber(rangeId, numberId, onUpdate = null) {
 function initBidirectionalInputs() {
     bindRangeAndNumber("inputTargetSlider", "inputTargetPrice", updateTargetDeltaBadge);
     bindRangeAndNumber("editTargetSlider", "editTargetPrice");
-    bindRangeAndNumber("cfgIntervalSlider", "cfgCheckInterval");
 }
 
 function syncSliderBounds(referencePrice = null) {
@@ -149,10 +170,12 @@ async function loadState() {
         const response = await fetch("/api/state");
         const data = await response.json();
 
+        appState.userEmail = data.user_email || null;
         appState.products = data.products || [];
         appState.settings = data.settings || {};
         appState.stats = data.stats || { total_products: 0, deals_count: 0, total_savings: 0 };
 
+        renderAccount();
         renderKPIs();
         renderProducts();
     } catch (err) {
@@ -168,9 +191,8 @@ function renderKPIs() {
     animateValue(document.getElementById("kpiTotalSavings"), stats.total_savings, v => formatBRL(v));
 
     const emailModeEl = document.getElementById("kpiEmailMode");
-    const activeRecipient = settings.default_recipient || settings.smtp_email;
-    if (activeRecipient) {
-        emailModeEl.textContent = activeRecipient;
+    if (appState.userEmail) {
+        emailModeEl.textContent = appState.userEmail;
         emailModeEl.classList.add("text-emerald");
     } else {
         emailModeEl.textContent = "Aguardando E-mail";
@@ -211,6 +233,19 @@ function renderProducts() {
         }
         return true;
     });
+
+    if (!appState.userEmail) {
+        grid.innerHTML = `
+            <div class="empty-box">
+                <h3>Informe seu e-mail para começar</h3>
+                <p>Cada pessoa tem o próprio espaço: você só vê e gerencia os seus produtos, e os alertas chegam no seu e-mail.</p>
+                <button type="button" class="btn btn-primary fx-shine fx-ripple" onclick="openSettingsModal()">
+                    Entrar com e-mail
+                </button>
+            </div>
+        `;
+        return;
+    }
 
     if (filtered.length === 0) {
         grid.innerHTML = `
@@ -463,7 +498,6 @@ async function handleAddProduct(event) {
     const payload = {
         url: document.getElementById("inputUrl").value.trim(),
         target_price: document.getElementById("inputTargetPrice").value,
-        notify_email: document.getElementById("inputNotifyEmail").value.trim(),
         title: document.getElementById("inputTitle").value.trim(),
         current_price: document.getElementById("inputCurrentPrice").value,
         image_url: appState.previewedData ? appState.previewedData.image_url : ""
@@ -486,7 +520,9 @@ async function handleAddProduct(event) {
                 if (data.title) document.getElementById("inputTitle").value = data.title;
                 document.getElementById("inputCurrentPrice").focus();
             }
-            showToast("Atenção", data.error || "Verifique os parâmetros informados.", "error");
+            if (res.status !== 429 && res.status !== 401) {
+                showToast("Atenção", data.error || "Verifique os parâmetros informados.", "error");
+            }
             return;
         }
 
@@ -531,7 +567,9 @@ async function checkSingleProduct(productId) {
         const data = await res.json();
 
         await loadState();
-        showToast("Sincronização concluída", data.note || "Cotação atualizada.", "success");
+        if (data.success !== false) {
+            showToast("Sincronização concluída", data.note || "Cotação atualizada.", "success");
+        }
 
         if (data.alert) {
             handleAlertNotification(data.alert);
@@ -573,7 +611,9 @@ async function checkAllProducts() {
         const data = await res.json();
 
         await loadState();
-        showToast("Lote verificado", data.message, "success");
+        if (data.success !== false) {
+            showToast("Lote verificado", data.message, "success");
+        }
 
         if (data.last_alert) {
             handleAlertNotification(data.last_alert);
@@ -751,7 +791,6 @@ function openEditTargetModal(productId) {
     document.getElementById("editProductId").value = prod.id;
     document.getElementById("editProductTitle").textContent = prod.title;
     document.getElementById("editTargetPrice").value = prod.target_price;
-    document.getElementById("editNotifyEmail").value = prod.notify_email || "";
 
     const slider = document.getElementById("editTargetSlider");
     if (slider) {
@@ -768,13 +807,12 @@ async function handleSaveTarget(event) {
     event.preventDefault();
     const productId = document.getElementById("editProductId").value;
     const target_price = document.getElementById("editTargetPrice").value;
-    const notify_email = document.getElementById("editNotifyEmail").value.trim();
 
     try {
         const res = await fetch(`/api/products/${productId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ target_price, notify_email })
+            body: JSON.stringify({ target_price })
         });
         const data = await res.json();
 
@@ -809,66 +847,76 @@ async function seedDemoProducts() {
     }
 }
 
-function openSettingsModal() {
-    const s = appState.settings || {};
-    document.getElementById("cfgSmtpEmail").value = s.smtp_email || "";
-    document.getElementById("cfgSmtpPassword").value = "";
-    document.getElementById("cfgSmtpPassword").placeholder = s.has_password
-        ? "•••••••••••••••• (Token configurado)"
-        : "xxxx xxxx xxxx xxxx";
-    document.getElementById("cfgDefaultRecipient").value = s.default_recipient || "";
-    document.getElementById("cfgSmtpHost").value = s.smtp_host || "smtp.gmail.com";
-    document.getElementById("cfgSmtpPort").value = s.smtp_port || 587;
-
-    const intervalVal = s.check_interval_minutes || 30;
-    document.getElementById("cfgCheckInterval").value = intervalVal;
-    document.getElementById("cfgIntervalSlider").value = intervalVal;
-    document.getElementById("cfgAutoCheck").checked = Boolean(s.auto_check_enabled ?? true);
-
-    document.getElementById("settingsModal").classList.remove("hidden");
+function renderAccount() {
+    const email = appState.userEmail;
+    const label = document.getElementById("accountLabel");
+    if (label) label.textContent = email || "Entrar com e-mail";
+    const owner = document.getElementById("ownerEmailLabel");
+    if (owner) owner.textContent = email || "informe seu e-mail no topo";
 }
 
-async function handleSaveSettings(event) {
+function openSettingsModal() {
+    const email = appState.userEmail;
+    document.getElementById("loginFormBlock").classList.toggle("hidden", Boolean(email));
+    document.getElementById("loggedBlock").classList.toggle("hidden", !email);
+    document.getElementById("loggedEmail").textContent = email || "";
+    document.getElementById("cfgUserEmail").value = "";
+    document.getElementById("settingsModal").classList.remove("hidden");
+    if (!email) {
+        setTimeout(() => document.getElementById("cfgUserEmail").focus(), 60);
+    }
+}
+
+async function handleLogin(event) {
     event.preventDefault();
-    const payload = {
-        smtp_email: document.getElementById("cfgSmtpEmail").value.trim(),
-        smtp_password: document.getElementById("cfgSmtpPassword").value.trim(),
-        default_recipient: document.getElementById("cfgDefaultRecipient").value.trim(),
-        smtp_host: document.getElementById("cfgSmtpHost").value.trim(),
-        smtp_port: document.getElementById("cfgSmtpPort").value,
-        check_interval_minutes: document.getElementById("cfgCheckInterval").value,
-        auto_check_enabled: document.getElementById("cfgAutoCheck").checked
-    };
+    const email = document.getElementById("cfgUserEmail").value.trim();
 
     try {
-        const res = await fetch("/api/settings", {
+        const res = await fetch("/api/session", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ email })
         });
         const data = await res.json();
-        if (data.success) {
-            closeModal("settingsModal");
-            await loadState();
-            showToast("Parâmetros atualizados", data.message, "success");
+
+        if (!res.ok || !data.success) {
+            if (res.status !== 429) {
+                showToast("Verifique o e-mail", data.error || "Não foi possível identificar o e-mail.", "error");
+            }
+            return;
         }
+
+        closeModal("settingsModal");
+        appState.hasRendered = false;
+        await loadState();
+        showToast("E-mail identificado", data.message, "success");
     } catch (err) {
-        showToast("Erro", "Falha ao salvar parâmetros.", "error");
+        showToast("Erro", "Não foi possível identificar o e-mail agora.", "error");
+    }
+}
+
+async function handleLogout() {
+    try {
+        await fetch("/api/logout", { method: "POST" });
+        closeModal("settingsModal");
+        appState.hasRendered = false;
+        await loadState();
+        showToast("Sessão encerrada", "Você saiu deste navegador.", "info");
+    } catch (err) {
+        showToast("Erro", "Não foi possível encerrar a sessão.", "error");
     }
 }
 
 async function triggerTestEmail() {
-    const typedRecipientEl = document.getElementById("cfgDefaultRecipient");
-    const recipient = typedRecipientEl ? typedRecipientEl.value.trim() : "";
+    if (!appState.userEmail) {
+        openSettingsModal();
+        showToast("Identifique-se", "Informe seu e-mail para receber o teste.", "info");
+        return;
+    }
 
     try {
-        const res = await fetch("/api/test-email", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ recipient })
-        });
+        const res = await fetch("/api/test-email", { method: "POST" });
         const data = await res.json();
-        await loadState();
         if (data.alert) {
             handleAlertNotification(data.alert, true);
         }

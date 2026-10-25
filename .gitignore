@@ -22,3 +22,6 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Chave que assina o cookie de sessao (gerada automaticamente)
+.secret_key

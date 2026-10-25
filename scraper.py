@@ -18,9 +18,120 @@ implementamos uma busca em 2 estágios:
 
 import re
 import json
-from urllib.parse import urlparse
+import time
+import socket
+import ipaddress
+import threading
+from urllib.parse import urlparse, urljoin
 import requests
 from bs4 import BeautifulSoup
+
+# ---------------------------------------------------------------------
+# SEGURANÇA — proteção contra SSRF (Server-Side Request Forgery)
+# O usuário informa a URL, então o SERVIDOR é quem faz a requisição.
+# Sem validação, alguém poderia pedir http://127.0.0.1/... ou o IP de
+# metadados da nuvem (169.254.169.254) e ler serviços internos da máquina.
+# ---------------------------------------------------------------------
+ALLOWED_PORTS = (None, 80, 443)
+MAX_URL_LENGTH = 2048
+MAX_REDIRECTS = 3
+MAX_HTML_BYTES = 3_000_000
+MAX_TITLE_LENGTH = 200
+
+# Cache curto de resolução de DNS (evita consultar o DNS a cada recurso da página)
+_HOST_CACHE = {}
+_HOST_CACHE_TTL = 60
+
+# No máximo 2 navegadores Chrome ao mesmo tempo (evita esgotar a memória do servidor)
+_BROWSER_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _host_is_public(hostname):
+    """
+    Retorna True apenas se TODOS os IPs do domínio forem públicos (da internet).
+    Bloqueia localhost, redes privadas (10.x, 192.168.x), link-local (169.254.x) etc.
+    """
+    now = time.time()
+    cached = _HOST_CACHE.get(hostname)
+    if cached and now - cached[1] < _HOST_CACHE_TTL:
+        return cached[0]
+
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+        addresses = {info[4][0].split("%")[0] for info in infos}
+        result = bool(addresses) and all(ipaddress.ip_address(a).is_global for a in addresses)
+    except (socket.gaierror, ValueError, UnicodeError):
+        result = False
+
+    _HOST_CACHE[hostname] = (result, now)
+    return result
+
+
+def validate_public_url(url):
+    """
+    Valida se a URL é segura para o servidor acessar.
+    Retorna (True, "") se for segura ou (False, "motivo") se não for.
+    """
+    if not url or not isinstance(url, str) or len(url) > MAX_URL_LENGTH:
+        return False, "URL vazia ou muito longa."
+
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https"):
+        return False, "A URL precisa começar com http:// ou https://"
+    if not parsed.hostname:
+        return False, "URL sem endereço de site válido."
+    if parsed.username or parsed.password:
+        return False, "URLs com usuário e senha não são permitidas."
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return False, "Porta da URL inválida."
+    if port not in ALLOWED_PORTS:
+        return False, "Apenas as portas padrão 80 e 443 são permitidas."
+
+    if not _host_is_public(parsed.hostname):
+        return False, "Esse endereço não é um site público da internet."
+
+    return True, ""
+
+
+def safe_get_html(url):
+    """
+    Faz o download da página validando CADA redirecionamento (um site público
+    poderia redirecionar para um IP interno) e limitando o tamanho da resposta.
+    Retorna o HTML (str) ou None se bloqueado/erro.
+    """
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        ok, _reason = validate_public_url(current_url)
+        if not ok:
+            return None
+
+        response = requests.get(current_url, headers=HEADERS, timeout=8, allow_redirects=False, stream=True)
+        try:
+            if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("Location")
+                if not location:
+                    return None
+                current_url = urljoin(current_url, location)
+                continue
+
+            if response.status_code != 200:
+                return None
+
+            chunks, total = [], 0
+            for chunk in response.iter_content(chunk_size=65536):
+                total += len(chunk)
+                if total > MAX_HTML_BYTES:
+                    break
+                chunks.append(chunk)
+            encoding = response.encoding or "utf-8"
+            return b"".join(chunks).decode(encoding, errors="replace")
+        finally:
+            response.close()
+    return None
+
 
 HEADERS = {
     "User-Agent": (
@@ -201,11 +312,35 @@ def extract_from_open_graph(soup):
     return result
 
 
+def _route_guard(route):
+    """
+    Dentro do Chrome headless, bloqueia qualquer requisição (inclusive redirecionamentos
+    e recursos da página) que aponte para endereços internos/privados.
+    """
+    request_url = route.request.url
+    if request_url.startswith(("data:", "blob:", "about:")):
+        route.continue_()
+        return
+    ok, _reason = validate_public_url(request_url)
+    if ok:
+        route.continue_()
+    else:
+        route.abort()
+
+
 def fetch_html_with_playwright(url):
     """
     Usa o navegador Chrome em modo Headless via Playwright para resolver o desafio
     JavaScript do Mercado Livre e obter o DOM completo renderizado com o preço real.
+    Limitado a 2 navegadores simultâneos e com todas as requisições validadas (anti-SSRF).
     """
+    ok, _reason = validate_public_url(url)
+    if not ok:
+        return None
+
+    if not _BROWSER_SLOTS.acquire(timeout=20):
+        return None
+
     try:
         from playwright.sync_api import sync_playwright
 
@@ -223,24 +358,28 @@ def fetch_html_with_playwright(url):
                     args=["--disable-blink-features=AutomationControlled"]
                 )
 
-            temp_page = browser.new_page()
-            real_ua = temp_page.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
-            temp_page.close()
-
-            ctx = browser.new_context(user_agent=real_ua, locale="pt-BR")
-            page = ctx.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
-
             try:
-                page.wait_for_selector("h1.ui-pdp-title, .andes-money-amount__fraction", timeout=9000)
-            except Exception:
-                page.wait_for_timeout(2500)
+                temp_page = browser.new_page()
+                real_ua = temp_page.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
+                temp_page.close()
 
-            html = page.content()
-            browser.close()
-            return html
+                ctx = browser.new_context(user_agent=real_ua, locale="pt-BR")
+                page = ctx.new_page()
+                page.route("**/*", _route_guard)
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+
+                try:
+                    page.wait_for_selector("h1.ui-pdp-title, .andes-money-amount__fraction", timeout=9000)
+                except Exception:
+                    page.wait_for_timeout(2500)
+
+                return page.content()
+            finally:
+                browser.close()
     except Exception:
         return None
+    finally:
+        _BROWSER_SLOTS.release()
 
 
 def parse_product_soup(soup):
@@ -279,20 +418,22 @@ def scrape_product(url):
     2. Se o site retornar desafio JS (como o CloudFront do Mercado Livre),
        aciona automaticamente o navegador headless via Playwright para ler o preço real!
     """
-    if not url or not url.startswith(("http://", "https://")):
+    url = (url or "").strip()
+    url_ok, url_error = validate_public_url(url)
+    if not url_ok:
         return {
             "success": False,
-            "error": "URL inválida. Certifique-se de que o link começa com https://"
+            "error": f"URL não permitida: {url_error}"
         }
 
     store_name = detect_store_name(url)
     title, price, image_url = None, None, None
 
-    # 1. Tentativa rápida via HTTP
+    # 1. Tentativa rápida via HTTP (com validação anti-SSRF a cada redirecionamento)
     try:
-        response = requests.get(url, headers=HEADERS, timeout=8)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
+        html_text = safe_get_html(url)
+        if html_text:
+            soup = BeautifulSoup(html_text, "html.parser")
             title, price, image_url = parse_product_soup(soup)
     except requests.exceptions.RequestException:
         pass
@@ -313,6 +454,9 @@ def scrape_product(url):
             title = f"Produto Monitorado ({store_name})"
 
     image_url = image_url or DEFAULT_PRODUCT_IMAGE
+    if not str(image_url).startswith(("http://", "https://")):
+        image_url = DEFAULT_PRODUCT_IMAGE
+    title = (title or "")[:MAX_TITLE_LENGTH]
 
     if not price:
         return {

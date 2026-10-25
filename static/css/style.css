@@ -1833,3 +1833,27 @@ body::after {
         transform: none;
     }
 }
+
+
+/* ---------- Identificação por e-mail ---------- */
+.account-label {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.owner-email-box {
+    display: flex;
+    align-items: center;
+    height: 38px;
+    padding: 0 12px;
+    font-size: 0.8rem;
+    color: var(--emerald);
+    background: var(--bg-input);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

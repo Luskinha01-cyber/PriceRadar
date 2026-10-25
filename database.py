@@ -86,6 +86,20 @@ def init_db():
     # Garante que a linha padrão de configuração existe
     cursor.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
 
+    # Migração (multiusuário por e-mail): cada produto pertence a um e-mail dono.
+    # Bancos antigos recebem a coluna `owner_email`; produtos que já tinham um
+    # e-mail de notificação passam a pertencer a esse e-mail.
+    cursor.execute("PRAGMA table_info(products)")
+    existing_columns = [row["name"] for row in cursor.fetchall()]
+    if "owner_email" not in existing_columns:
+        cursor.execute("ALTER TABLE products ADD COLUMN owner_email TEXT DEFAULT ''")
+        cursor.execute("""
+            UPDATE products
+            SET owner_email = lower(trim(notify_email))
+            WHERE owner_email = '' AND notify_email IS NOT NULL AND notify_email != ''
+        """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_products_owner ON products (owner_email)")
+
     conn.commit()
     conn.close()
 
@@ -94,7 +108,7 @@ def init_db():
 # FUNÇÕES DE PRODUTOS (CRUD - Create, Read, Update, Delete)
 # =====================================================================
 
-def add_product(title, url, image_url, store_name, current_price, target_price, notify_email=""):
+def add_product(title, url, image_url, store_name, current_price, target_price, notify_email="", owner_email=""):
     """
     Adiciona um novo produto no banco de dados e registra seu primeiro preço no histórico.
     """
@@ -106,12 +120,12 @@ def add_product(title, url, image_url, store_name, current_price, target_price, 
         INSERT INTO products (
             title, url, image_url, store_name,
             current_price, initial_price, lowest_price, highest_price,
-            target_price, notify_email, last_checked, alert_sent, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            target_price, notify_email, last_checked, alert_sent, created_at, owner_email
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     """, (
         title, url, image_url, store_name,
         current_price, current_price, current_price, current_price,
-        target_price, notify_email, now, now
+        target_price, notify_email, now, now, normalize_email(owner_email)
     ))
 
     product_id = cursor.lastrowid
@@ -127,15 +141,22 @@ def add_product(title, url, image_url, store_name, current_price, target_price, 
     return get_product_by_id(product_id)
 
 
-def get_all_products():
+def get_all_products(owner_email=None):
     """
-    Retorna todos os produtos cadastrados ordenados pelos mais recentes,
-    incluindo também os últimos registros de histórico de cada um.
+    Retorna os produtos ordenados pelos mais recentes, incluindo o histórico de cada um.
+    Se `owner_email` for informado, retorna SOMENTE os produtos daquele e-mail
+    (isolamento entre usuários). Sem o parâmetro, retorna tudo (uso interno do monitor).
     """
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM products ORDER BY id DESC")
+    if owner_email is None:
+        cursor.execute("SELECT * FROM products ORDER BY id DESC")
+    else:
+        cursor.execute(
+            "SELECT * FROM products WHERE owner_email = ? ORDER BY id DESC",
+            (normalize_email(owner_email),)
+        )
     rows = cursor.fetchall()
 
     products = []
@@ -329,7 +350,7 @@ def update_last_auto_check():
     conn.close()
 
 
-def seed_demo_products():
+def seed_demo_products(owner_email=""):
     """
     Insere 3 produtos realistas com histórico de preços nos últimos dias
     para que o estudante possa visualizar gráficos, comparações e testar alertas na hora!
@@ -381,12 +402,12 @@ def seed_demo_products():
             INSERT INTO products (
                 title, url, image_url, store_name,
                 current_price, initial_price, lowest_price, highest_price,
-                target_price, notify_email, last_checked, alert_sent, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+                target_price, notify_email, last_checked, alert_sent, created_at, owner_email
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
         """, (
             item["title"], item["url"], item["image_url"], item["store_name"],
             current_p, initial_p, lowest_p, highest_p,
-            item["target_price"], now_str, item["alert_sent"], created_str
+            item["target_price"], now_str, item["alert_sent"], created_str, normalize_email(owner_email)
         ))
 
         prod_id = cursor.lastrowid
@@ -399,3 +420,43 @@ def seed_demo_products():
 
     conn.commit()
     conn.close()
+
+
+# =====================================================================
+# ISOLAMENTO ENTRE USUÁRIOS (identificação por e-mail)
+# =====================================================================
+
+def normalize_email(email):
+    """
+    Padroniza o e-mail (minúsculas, sem espaços) para que `Ana@Gmail.com`
+    e `ana@gmail.com` sejam tratados como a mesma pessoa.
+    """
+    return (email or "").strip().lower()
+
+
+def get_product_for_owner(product_id, owner_email):
+    """
+    Retorna o produto SOMENTE se ele pertencer ao e-mail informado.
+    Se o produto existir mas for de outra pessoa, retorna None (como se não existisse),
+    impedindo que um usuário edite, exclua ou veja os produtos de outro.
+    """
+    product = get_product_by_id(product_id)
+    owner = normalize_email(owner_email)
+    if not product or not owner or normalize_email(product.get("owner_email")) != owner:
+        return None
+    return product
+
+
+def count_products_by_owner(owner_email):
+    """
+    Conta quantos produtos o e-mail possui (usado para limitar o uso por pessoa).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) AS total FROM products WHERE owner_email = ?",
+        (normalize_email(owner_email),)
+    )
+    total = cursor.fetchone()["total"]
+    conn.close()
+    return total

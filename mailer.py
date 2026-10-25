@@ -9,11 +9,33 @@ Permite enviar alertas de queda de preço de 2 formas:
 """
 
 import os
+import re
+import html
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import requests
+
+# Validação estrita de e-mail (também impede injeção de cabeçalhos e de caminho na URL do relay)
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24}$")
+
+
+def esc(value):
+    """
+    Escapa texto para colocar com segurança dentro de HTML.
+    Títulos de produtos vêm de sites externos (ou do usuário) e NUNCA devem
+    ser inseridos no HTML do e-mail/prévia sem escape (evita XSS).
+    """
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def safe_http_url(value, fallback="#"):
+    """
+    Só aceita links http/https (bloqueia javascript:, data: etc.).
+    """
+    text = str(value or "").strip()
+    return text if text.startswith(("http://", "https://")) else fallback
 
 
 def format_brl(value):
@@ -34,6 +56,10 @@ def build_alert_email_html(product):
     savings = max(0.0, reference_price - current_price)
     discount_pct = round((savings / reference_price) * 100) if reference_price > 0 else 0
     now_str = datetime.now().strftime("%d/%m/%Y · %H:%M")
+    title = esc(product.get('title', 'Produto Monitorado'))
+    store = esc(product.get('store_name', 'Mercado Livre'))
+    image = esc(safe_http_url(product.get('image_url'), ""))
+    link = esc(safe_http_url(product.get('url')))
 
     return f"""
     <!DOCTYPE html>
@@ -57,14 +83,14 @@ def build_alert_email_html(product):
             <div style="padding:24px;">
                 <div style="display:flex; gap:16px; align-items:center; margin-bottom:20px;">
                     <div style="background:#ffffff; padding:8px; border-radius:6px; width:72px; height:72px; text-align:center;">
-                        <img src="{product.get('image_url', '')}" alt="Produto" style="max-width:100%; max-height:100%; object-fit:contain;" />
+                        <img src="{image}" alt="Produto" style="max-width:100%; max-height:100%; object-fit:contain;" />
                     </div>
                     <div>
                         <div style="font-family:monospace; font-size:11px; color:#71717a; text-transform:uppercase;">
-                            {product.get('store_name', 'Mercado Livre')} · {now_str}
+                            {store} · {now_str}
                         </div>
                         <h2 style="font-size:15px; font-weight:500; line-height:1.4; color:#f4f4f5; margin:4px 0 0;">
-                            {product.get('title', 'Produto Monitorado')}
+                            {title}
                         </h2>
                     </div>
                 </div>
@@ -95,7 +121,7 @@ def build_alert_email_html(product):
                 {f'<div style="background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25); color:#10b981; padding:10px 14px; border-radius:6px; font-family:monospace; font-size:12px; margin-bottom:20px;">VARIAÇÃO: -{format_brl(savings)} (-{discount_pct}%) vs. topo histórico</div>' if savings > 0 else ''}
 
                 <div>
-                    <a href="{product.get('url', '#')}" target="_blank" style="display:inline-block; background:#f4f4f5; color:#09090b; text-decoration:none; padding:11px 20px; border-radius:6px; font-weight:600; font-size:13px;">
+                    <a href="{link}" target="_blank" rel="noopener noreferrer" style="display:inline-block; background:#f4f4f5; color:#09090b; text-decoration:none; padding:11px 20px; border-radius:6px; font-weight:600; font-size:13px;">
                         Abrir anúncio na loja &rarr;
                     </a>
                 </div>
@@ -179,20 +205,24 @@ def send_via_zero_config_relay(recipient, product, subject, html_content):
     return None
 
 
-def send_price_alert(product, settings):
-    smtp_email = (settings.get("smtp_email") or os.environ.get("SMTP_EMAIL") or "").strip()
-    smtp_password = (settings.get("smtp_password") or os.environ.get("SMTP_PASSWORD") or "").strip()
-    smtp_host = (settings.get("smtp_host") or "smtp.gmail.com").strip()
-    smtp_port = int(settings.get("smtp_port") or 587)
+def send_price_alert(product, settings=None):
+    """
+    Envia o alerta para o DONO do produto (`owner_email`).
+    Credenciais SMTP próprias (opcional) vêm somente de variáveis de ambiente
+    do servidor (SMTP_EMAIL, SMTP_PASSWORD, SMTP_HOST, SMTP_PORT) — nunca da interface.
+    """
+    smtp_email = os.environ.get("SMTP_EMAIL", "").strip()
+    smtp_password = os.environ.get("SMTP_PASSWORD", "").strip()
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
 
-    recipient = (
-        (product.get("notify_email") or "").strip()
-        or (settings.get("default_recipient") or "").strip()
-        or smtp_email
-    )
+    recipient = (product.get("owner_email") or product.get("notify_email") or "").strip()
+    if not EMAIL_RE.match(recipient):
+        recipient = ""
 
     html_content = build_alert_email_html(product)
     subject = f"[PriceRadar] Alvo atingido: {product.get('title', 'Produto')[:48]} por {format_brl(product.get('current_price'))}"
+    subject = subject.replace("\r", " ").replace("\n", " ")
 
     # 1. Se houver SMTP próprio configurado (opcional), usa conexão direta TLS
     if smtp_email and smtp_password and recipient:
@@ -235,7 +265,6 @@ def send_price_alert(product, settings):
         "subject": subject,
         "html_preview": html_content,
         "message": (
-            "Clique em 'Receber por E-mail' no topo e digite apenas o seu endereço de e-mail "
-            "para receber os alertas automaticamente!"
+            "Informe seu e-mail no topo da página para receber os alertas automaticamente!"
         )
     }

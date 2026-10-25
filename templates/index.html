@@ -42,7 +42,7 @@
                         <rect width="20" height="16" x="2" y="4" rx="2"/>
                         <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
                     </svg>
-                    <span>Receber por E-mail</span>
+                    <span id="accountLabel" class="account-label">Entrar com e-mail</span>
                 </button>
 
                 <button type="button" class="btn btn-primary fx-shine fx-ripple" id="btnCheckAll" onclick="checkAllProducts()">
@@ -249,12 +249,8 @@
                     </div>
 
                     <div class="field-block">
-                        <label for="inputNotifyEmail">Destinatário do Alerta (Opcional)</label>
-                        <input
-                            type="email"
-                            id="inputNotifyEmail"
-                            placeholder="notificacoes@dominio.com"
-                        />
+                        <label>Alertas serão enviados para</label>
+                        <div class="owner-email-box mono-text" id="ownerEmailLabel">informe seu e-mail no topo</div>
                     </div>
 
                     <div class="field-submit">
@@ -373,11 +369,6 @@
                     </div>
                 </div>
 
-                <div class="field-block mb-24">
-                    <label for="editNotifyEmail">E-mail de Notificação</label>
-                    <input type="email" id="editNotifyEmail" placeholder="notificacoes@dominio.com" />
-                </div>
-
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" onclick="closeModal('editTargetModal')">Cancelar</button>
                     <button type="submit" class="btn btn-primary fx-shine fx-ripple">Salvar Alterações</button>
@@ -387,85 +378,53 @@
     </div>
 
     <!-- =================================================================
-         MODAL 3: NOTIFICAÇÕES POR E-MAIL (1 PASSO: SÓ DIGITAR O E-MAIL)
+         MODAL 3: IDENTIFICAÇÃO POR E-MAIL (SEM SENHA)
          ================================================================= -->
     <div class="modal-backdrop hidden" id="settingsModal" onclick="closeModalOnBackdrop(event, 'settingsModal')">
         <div class="modal-card">
             <div class="modal-header">
                 <div>
-                    <span class="modal-kicker mono-text">ALERTAS AUTOMÁTICOS</span>
-                    <h3 class="modal-title">Para onde enviamos os alertas?</h3>
+                    <span class="modal-kicker mono-text">SEU ESPAÇO PRIVADO</span>
+                    <h3 class="modal-title">Qual é o seu e-mail?</h3>
                 </div>
                 <button type="button" class="btn-close" onclick="closeModal('settingsModal')" aria-label="Fechar">&times;</button>
             </div>
 
-            <form onsubmit="handleSaveSettings(event)" class="modal-body">
-                <div class="tech-note">
-                    <div class="tech-note-title">Envio Automático Sem Senha</div>
-                    <p>
-                        Basta informar seu e-mail abaixo. Quando um produto atingir sua meta, o PriceRadar dispara o alerta automaticamente para sua caixa de entrada (no 1º envio, clique no botão <em>Activate</em> que chegará no seu e-mail para liberar o recebimento contínuo).
+            <div class="modal-body">
+                <div id="loginFormBlock">
+                    <form onsubmit="handleLogin(event)">
+                        <div class="tech-note">
+                            <div class="tech-note-title">Sem senha e sem cadastro</div>
+                            <p>
+                                Digite seu e-mail para ver e gerenciar apenas os seus produtos. Os alertas de promoção chegam nesse endereço automaticamente.
+                            </p>
+                        </div>
+
+                        <div class="field-block mb-24">
+                            <label for="cfgUserEmail">Seu e-mail</label>
+                            <input type="email" id="cfgUserEmail" placeholder="seuemail@gmail.com" required maxlength="254" autocomplete="email" />
+                        </div>
+
+                        <div class="modal-footer">
+                            <button type="submit" class="btn btn-primary fx-shine fx-ripple">Continuar</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="loggedBlock" class="hidden">
+                    <div class="tech-note">
+                        <div class="tech-note-title">Identificado como</div>
+                        <p class="mono-text" id="loggedEmail"></p>
+                    </div>
+                    <p class="modal-subtext">
+                        No primeiro envio, o serviço de e-mail manda uma mensagem com o botão <em>Activate</em>. Clique nele uma única vez para liberar todos os próximos alertas (veja também a caixa de Spam).
                     </p>
-                </div>
-
-                <div class="field-block mb-16">
-                    <label for="cfgDefaultRecipient">Seu E-mail Principal</label>
-                    <input
-                        type="email"
-                        id="cfgDefaultRecipient"
-                        placeholder="seuemail@gmail.com"
-                        required
-                    />
-                </div>
-
-                <div class="field-block mb-16">
-                    <label for="cfgCheckInterval">Intervalo de Verificação Automática (minutos)</label>
-                    <div class="dual-numeric-control">
-                        <input type="range" id="cfgIntervalSlider" min="5" max="240" step="5" value="30" />
-                        <input type="number" min="1" max="1440" id="cfgCheckInterval" class="mono-input" value="30" />
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-ghost fx-ripple" onclick="handleLogout()">Sair</button>
+                        <button type="button" class="btn btn-primary fx-shine fx-ripple" onclick="triggerTestEmail()">Enviar teste agora</button>
                     </div>
                 </div>
-
-                <div class="field-block mb-16">
-                    <label class="toggle-row">
-                        <input type="checkbox" id="cfgAutoCheck" checked />
-                        <span>Manter verificação automática ativa em segundo plano</span>
-                    </label>
-                </div>
-
-                <!-- Opcional: Servidor SMTP próprio colapsado para não poluir a tela -->
-                <details class="advanced-smtp-details">
-                    <summary class="mono-text">Configuração avançada de servidor SMTP (opcional)</summary>
-                    <div class="advanced-smtp-body">
-                        <div class="grid-2">
-                            <div class="field-block">
-                                <label for="cfgSmtpEmail">Remetente SMTP</label>
-                                <input type="email" id="cfgSmtpEmail" placeholder="Opcional" />
-                            </div>
-                            <div class="field-block">
-                                <label for="cfgSmtpPassword">Senha de App</label>
-                                <input type="password" id="cfgSmtpPassword" class="mono-input" placeholder="Opcional" />
-                            </div>
-                        </div>
-                        <div class="grid-2 mt-14">
-                            <div class="field-block">
-                                <label for="cfgSmtpHost">Host SMTP</label>
-                                <input type="text" id="cfgSmtpHost" class="mono-input" value="smtp.gmail.com" />
-                            </div>
-                            <div class="field-block">
-                                <label for="cfgSmtpPort">Porta TLS</label>
-                                <input type="number" id="cfgSmtpPort" class="mono-input" value="587" />
-                            </div>
-                        </div>
-                    </div>
-                </details>
-
-                <div class="modal-footer mt-24">
-                    <button type="button" class="btn btn-secondary fx-ripple" onclick="triggerTestEmail()">
-                        Enviar Teste Agora
-                    </button>
-                    <button type="submit" class="btn btn-primary fx-shine fx-ripple">Salvar E-mail</button>
-                </div>
-            </form>
+            </div>
         </div>
     </div>
 
@@ -484,7 +443,7 @@
             <div class="modal-body">
                 <p class="email-preview-meta mono-text" id="emailPreviewMeta"></p>
                 <div class="email-iframe-box">
-                    <iframe id="emailPreviewFrame" title="Renderização do E-mail"></iframe>
+                    <iframe id="emailPreviewFrame" title="Renderização do E-mail" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
                 </div>
             </div>
         </div>
