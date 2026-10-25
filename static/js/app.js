@@ -24,6 +24,9 @@ let priceChartInstance = null;
 document.addEventListener("DOMContentLoaded", () => {
     initBidirectionalInputs();
     initRippleEffects();
+    initRevealObserver();
+    initCardSpotlight();
+    initScrollSpy();
     loadState();
     setInterval(loadState, 45000);
 });
@@ -160,16 +163,17 @@ async function loadState() {
 function renderKPIs() {
     const { products, settings, stats } = appState;
 
-    document.getElementById("kpiTotalProducts").textContent = stats.total_products;
-    document.getElementById("kpiDealsCount").textContent = stats.deals_count;
-    document.getElementById("kpiTotalSavings").textContent = formatBRL(stats.total_savings);
+    animateValue(document.getElementById("kpiTotalProducts"), stats.total_products, v => Math.round(v));
+    animateValue(document.getElementById("kpiDealsCount"), stats.deals_count, v => Math.round(v));
+    animateValue(document.getElementById("kpiTotalSavings"), stats.total_savings, v => formatBRL(v));
 
     const emailModeEl = document.getElementById("kpiEmailMode");
-    if (settings.smtp_email && settings.has_password) {
-        emailModeEl.textContent = "SMTP Autenticado";
+    const activeRecipient = settings.default_recipient || settings.smtp_email;
+    if (activeRecipient) {
+        emailModeEl.textContent = activeRecipient;
         emailModeEl.classList.add("text-emerald");
     } else {
-        emailModeEl.textContent = "Simulação Local";
+        emailModeEl.textContent = "Aguardando E-mail";
         emailModeEl.classList.remove("text-emerald");
     }
 
@@ -188,6 +192,7 @@ function renderKPIs() {
     document.getElementById("countAll").textContent = products.length;
     document.getElementById("countDeals").textContent = dealsCount;
     document.getElementById("countWaiting").textContent = waitingCount;
+    renderTicker();
 }
 
 function renderProducts() {
@@ -221,6 +226,17 @@ function renderProducts() {
     }
 
     grid.innerHTML = filtered.map(prod => buildProductCardHTML(prod)).join("");
+
+    // Entrada escalonada apenas na primeira renderização (evita "piscar" nos refreshes)
+    const cards = grid.querySelectorAll(".product-card");
+    cards.forEach((card, i) => {
+        card.style.setProperty("--stagger-i", i);
+        if (!appState.hasRendered) {
+            card.classList.add("fx-reveal");
+            revealObserver.observe(card);
+        }
+    });
+    appState.hasRendered = true;
 }
 
 function buildProductCardHTML(prod) {
@@ -269,6 +285,8 @@ function buildProductCardHTML(prod) {
                     </div>
                 </div>
             </div>
+
+            ${buildSparklineHTML(prod, isDeal)}
 
             <div class="quote-matrix">
                 <div class="quote-cell">
@@ -840,9 +858,17 @@ async function handleSaveSettings(event) {
 }
 
 async function triggerTestEmail() {
+    const typedRecipientEl = document.getElementById("cfgDefaultRecipient");
+    const recipient = typedRecipientEl ? typedRecipientEl.value.trim() : "";
+
     try {
-        const res = await fetch("/api/test-email", { method: "POST" });
+        const res = await fetch("/api/test-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ recipient })
+        });
         const data = await res.json();
+        await loadState();
         if (data.alert) {
             handleAlertNotification(data.alert, true);
         }
@@ -896,4 +922,181 @@ function escapeHTML(str) {
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+}
+
+// =====================================================================
+// 8. V2 — MICROINTERAÇÕES, SPARKLINES E TICKER
+// =====================================================================
+
+let revealObserver = null;
+
+/**
+ * Revela elementos .fx-reveal ao entrarem na viewport (IntersectionObserver).
+ * Depois da animação, remove a classe para não interferir no tilt/hover.
+ */
+function initRevealObserver() {
+    revealObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const el = entry.target;
+            el.classList.add("is-visible");
+            revealObserver.unobserve(el);
+            setTimeout(() => el.classList.remove("fx-reveal", "is-visible"), 1100);
+        });
+    }, { threshold: 0.12 });
+
+    document.querySelectorAll(".fx-reveal").forEach(el => revealObserver.observe(el));
+}
+
+/**
+ * Spotlight que segue o cursor + tilt 3D sutil nos cards (delegação de eventos).
+ */
+function initCardSpotlight() {
+    const grid = document.getElementById("productsGrid");
+    if (!grid) return;
+
+    grid.addEventListener("pointermove", (event) => {
+        if (event.pointerType === "touch") return;
+        const card = event.target.closest(".product-card");
+        if (!card) return;
+
+        const rect = card.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        card.style.setProperty("--mx", `${x}px`);
+        card.style.setProperty("--my", `${y}px`);
+
+        const rotY = ((x / rect.width) - 0.5) * 5;
+        const rotX = ((y / rect.height) - 0.5) * -5;
+        card.style.transform = `perspective(800px) rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+    });
+
+    grid.addEventListener("pointerout", (event) => {
+        const card = event.target.closest(".product-card");
+        if (card && !card.contains(event.relatedTarget)) {
+            card.style.transform = "";
+        }
+    });
+}
+
+/**
+ * Destaca no menu a seção atualmente visível.
+ */
+function initScrollSpy() {
+    const links = document.querySelectorAll(".nav-link");
+    const sections = ["sec-overview", "sec-ingest", "sec-catalog"]
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+
+    const spy = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            links.forEach(link => {
+                link.classList.toggle("active", link.getAttribute("href") === `#${entry.target.id}`);
+            });
+        });
+    }, { rootMargin: "-40% 0px -50% 0px" });
+
+    sections.forEach(section => spy.observe(section));
+}
+
+/**
+ * Anima um número do valor anterior até o novo (count-up com easing).
+ */
+function animateValue(el, target, formatter) {
+    if (!el) return;
+    const from = Number(el.dataset.val ?? 0);
+    const to = Number(target) || 0;
+    el.dataset.val = to;
+
+    if (from === to) {
+        el.textContent = formatter(to);
+        return;
+    }
+
+    const duration = 800;
+    const start = performance.now();
+    const step = (now) => {
+        const progress = Math.min(1, (now - start) / duration);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        el.textContent = formatter(from + (to - from) * eased);
+        if (progress < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
+
+/**
+ * Gera o mini-gráfico SVG (sparkline) com a tendência desde a primeira coleta.
+ */
+function buildSparklineHTML(prod, isDeal) {
+    const prices = (prod.history || []).map(h => h.price);
+    if (prices.length < 2) {
+        return `
+            <div class="spark-row">
+                <svg class="spark-svg" viewBox="0 0 120 38" preserveAspectRatio="none" aria-hidden="true">
+                    <line x1="0" y1="19" x2="120" y2="19" stroke="rgba(255,255,255,0.14)" stroke-dasharray="3 4" />
+                </svg>
+                <div class="spark-trend flat"><strong>--</strong><span>aguardando</span></div>
+            </div>`;
+    }
+
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const range = max - min || 1;
+    const w = 120, h = 38, pad = 4;
+    const points = prices.map((p, i) => {
+        const x = (i / (prices.length - 1)) * w;
+        const y = pad + (1 - (p - min) / range) * (h - pad * 2);
+        return [x, y];
+    });
+    const path = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    const [lx, ly] = points[points.length - 1];
+
+    const first = prices[0];
+    const last = prices[prices.length - 1];
+    const pct = first > 0 ? ((last - first) / first) * 100 : 0;
+    const dir = pct < -0.05 ? "down" : pct > 0.05 ? "up" : "flat";
+    const sign = pct > 0 ? "+" : "";
+
+    return `
+        <div class="spark-row">
+            <svg class="spark-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+                <polyline class="spark-line ${isDeal ? "deal" : ""}" points="${path}" vector-effect="non-scaling-stroke" />
+                <circle class="spark-dot ${isDeal ? "deal" : ""}" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" />
+            </svg>
+            <div class="spark-trend ${dir}">
+                <strong>${sign}${pct.toFixed(1)}%</strong>
+                <span>desde a 1ª coleta</span>
+            </div>
+        </div>`;
+}
+
+/**
+ * Preenche a faixa de cotações rolante (conteúdo duplicado para loop contínuo).
+ */
+function renderTicker() {
+    const track = document.getElementById("tickerTrack");
+    if (!track) return;
+
+    const items = appState.products.map(prod => {
+        const hist = prod.history || [];
+        const prev = hist.length > 1 ? hist[hist.length - 2].price : prod.current_price;
+        const diff = prod.current_price - prev;
+        const dir = diff < 0 ? "down" : diff > 0 ? "up" : "flat";
+        const arrow = diff < 0 ? "▼" : diff > 0 ? "▲" : "–";
+        const pct = prev > 0 ? Math.abs((diff / prev) * 100).toFixed(1) : "0.0";
+        const shortTitle = (prod.title || "").split(" ").slice(0, 4).join(" ");
+        return `
+            <span class="ticker-item">
+                <span>${escapeHTML(shortTitle)}</span>
+                <strong>${formatBRL(prod.current_price)}</strong>
+                <span class="ticker-delta ${dir}">${arrow} ${pct}%</span>
+            </span>`;
+    }).join("");
+
+    if (!items) {
+        track.innerHTML = "";
+        return;
+    }
+    track.innerHTML = items + items;
 }

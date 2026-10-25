@@ -181,6 +181,21 @@ def api_add_product():
             )
         }), 422
 
+    # Se o usuário preencheu o e-mail no cadastro do produto e ainda não tinha um e-mail padrão salvo,
+    # já salvamos automaticamente como o e-mail principal dele para facilitar!
+    if notify_email:
+        current_cfg = database.get_settings()
+        if not current_cfg.get("default_recipient"):
+            database.update_settings(
+                smtp_email=current_cfg.get("smtp_email", ""),
+                smtp_password=current_cfg.get("smtp_password", ""),
+                default_recipient=notify_email,
+                smtp_host=current_cfg.get("smtp_host", "smtp.gmail.com"),
+                smtp_port=current_cfg.get("smtp_port", 587),
+                check_interval_minutes=current_cfg.get("check_interval_minutes", 30),
+                auto_check_enabled=current_cfg.get("auto_check_enabled", 1)
+            )
+
     product = database.add_product(
         title=title,
         url=url,
@@ -341,11 +356,25 @@ def api_save_settings():
 @app.route("/api/test-email", methods=["POST"])
 def api_test_email():
     """
-    Dispara um e-mail de teste usando o primeiro produto da lista (ou um produto fictício)
-    para validar as configurações de SMTP ou visualizar o template HTML na tela.
+    Dispara um e-mail de teste usando o primeiro produto da lista (ou um produto fictício).
+    Se o usuário acabou de digitar o e-mail no modal, já salva automaticamente!
     """
-    products = database.get_all_products()
+    data = request.get_json(silent=True) or {}
+    typed_recipient = (data.get("recipient") or "").strip()
+
     settings = database.get_settings()
+    if typed_recipient and "@" in typed_recipient:
+        settings = database.update_settings(
+            smtp_email=settings.get("smtp_email", ""),
+            smtp_password=settings.get("smtp_password", ""),
+            default_recipient=typed_recipient,
+            smtp_host=settings.get("smtp_host", "smtp.gmail.com"),
+            smtp_port=settings.get("smtp_port", 587),
+            check_interval_minutes=settings.get("check_interval_minutes", 30),
+            auto_check_enabled=settings.get("auto_check_enabled", 1)
+        )
+
+    products = database.get_all_products()
 
     if products:
         sample_product = products[0]

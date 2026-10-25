@@ -39,10 +39,10 @@
             <div class="topbar-actions">
                 <button type="button" class="btn btn-ghost fx-ripple" onclick="openSettingsModal()">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-                        <circle cx="12" cy="12" r="3"/>
+                        <rect width="20" height="16" x="2" y="4" rx="2"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
                     </svg>
-                    <span>Alertas SMTP</span>
+                    <span>Receber por E-mail</span>
                 </button>
 
                 <button type="button" class="btn btn-primary fx-shine fx-ripple" id="btnCheckAll" onclick="checkAllProducts()">
@@ -60,6 +60,50 @@
 
     <main class="container main-content">
         <!-- 1. Metric Ledger Strip (Grade Unificada de Métricas com Precisão Tabular) -->
+        <!-- 0. Hero: proposta de valor + radar animado -->
+        <section class="hero fx-reveal" aria-label="Apresentação">
+            <div class="hero-copy">
+                <span class="hero-kicker mono-text"><span class="status-dot active"></span> RADAR EM OPERAÇÃO</span>
+                <h1 class="hero-title">
+                    Pare de vigiar preços.<br />
+                    <span class="hero-title-dim">Deixe o radar fazer isso por você.</span>
+                </h1>
+                <p class="hero-sub">
+                    O PriceRadar lê o anúncio, registra cada variação em uma série histórica e envia um e-mail no instante em que a cotação cruza o seu preço alvo.
+                </p>
+                <div class="hero-cta">
+                    <a href="#sec-ingest" class="btn btn-primary fx-shine fx-ripple">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        <span>Novo monitoramento</span>
+                    </a>
+                    <button type="button" class="btn btn-ghost fx-ripple" onclick="openSettingsModal()">
+                        <span>Cadastrar meu e-mail</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="hero-radar" aria-hidden="true">
+                <span class="radar-ring r1"></span>
+                <span class="radar-ring r2"></span>
+                <span class="radar-ring r3"></span>
+                <span class="radar-axis ax-h"></span>
+                <span class="radar-axis ax-v"></span>
+                <span class="radar-sweep"></span>
+                <span class="radar-core"></span>
+                <span class="radar-blip b1"></span>
+                <span class="radar-blip b2"></span>
+                <span class="radar-blip b3"></span>
+                <span class="radar-tag t1 mono-text">ALVO · -12%</span>
+                <span class="radar-tag t2 mono-text">NOVA COLETA</span>
+                <span class="radar-tag t3 mono-text">R$ 1.199,90</span>
+            </div>
+        </section>
+
+        <!-- Ticker de cotações (preenchido via JS) -->
+        <div class="ticker" aria-label="Últimas cotações">
+            <div class="ticker-track" id="tickerTrack"></div>
+        </div>
+
         <section id="sec-overview" class="metrics-ledger" aria-label="Indicadores de Monitoramento">
             <div class="metric-cell">
                 <div class="metric-header">
@@ -343,75 +387,83 @@
     </div>
 
     <!-- =================================================================
-         MODAL 3: CONFIGURAÇÕES DE SERVIDOR SMTP E AGENDADOR
+         MODAL 3: NOTIFICAÇÕES POR E-MAIL (1 PASSO: SÓ DIGITAR O E-MAIL)
          ================================================================= -->
     <div class="modal-backdrop hidden" id="settingsModal" onclick="closeModalOnBackdrop(event, 'settingsModal')">
-        <div class="modal-card modal-lg">
+        <div class="modal-card">
             <div class="modal-header">
                 <div>
-                    <span class="modal-kicker mono-text">INFRAESTRUTURA DE ENVIO</span>
-                    <h3 class="modal-title">Configuração SMTP &amp; Agendador</h3>
+                    <span class="modal-kicker mono-text">ALERTAS AUTOMÁTICOS</span>
+                    <h3 class="modal-title">Para onde enviamos os alertas?</h3>
                 </div>
                 <button type="button" class="btn-close" onclick="closeModal('settingsModal')" aria-label="Fechar">&times;</button>
             </div>
 
             <form onsubmit="handleSaveSettings(event)" class="modal-body">
                 <div class="tech-note">
-                    <div class="tech-note-title">Autenticação SMTP (Gmail App Passwords)</div>
+                    <div class="tech-note-title">Envio Automático Sem Senha</div>
                     <p>
-                        Sem credenciais configuradas, o sistema opera em <strong>Simulação Local</strong> e renderiza o e-mail HTML diretamente na interface. Para envio externo via Gmail, gere uma <em>Senha de App</em> de 16 caracteres na sua conta Google e informe abaixo.
+                        Basta informar seu e-mail abaixo. Quando um produto atingir sua meta, o PriceRadar dispara o alerta automaticamente para sua caixa de entrada (no 1º envio, clique no botão <em>Activate</em> que chegará no seu e-mail para liberar o recebimento contínuo).
                     </p>
                 </div>
 
-                <div class="grid-2">
-                    <div class="field-block">
-                        <label for="cfgSmtpEmail">Conta Remetente (SMTP User)</label>
-                        <input type="email" id="cfgSmtpEmail" placeholder="voce@gmail.com" />
-                    </div>
-                    <div class="field-block">
-                        <label for="cfgSmtpPassword">Token / Senha de App (16 caracteres)</label>
-                        <input type="password" id="cfgSmtpPassword" class="mono-input" placeholder="xxxx xxxx xxxx xxxx" />
+                <div class="field-block mb-16">
+                    <label for="cfgDefaultRecipient">Seu E-mail Principal</label>
+                    <input
+                        type="email"
+                        id="cfgDefaultRecipient"
+                        placeholder="seuemail@gmail.com"
+                        required
+                    />
+                </div>
+
+                <div class="field-block mb-16">
+                    <label for="cfgCheckInterval">Intervalo de Verificação Automática (minutos)</label>
+                    <div class="dual-numeric-control">
+                        <input type="range" id="cfgIntervalSlider" min="5" max="240" step="5" value="30" />
+                        <input type="number" min="1" max="1440" id="cfgCheckInterval" class="mono-input" value="30" />
                     </div>
                 </div>
 
-                <div class="grid-3 mt-14">
-                    <div class="field-block">
-                        <label for="cfgDefaultRecipient">Destinatário Padrão</label>
-                        <input type="email" id="cfgDefaultRecipient" placeholder="destino@dominio.com" />
-                    </div>
-                    <div class="field-block">
-                        <label for="cfgSmtpHost">Host SMTP</label>
-                        <input type="text" id="cfgSmtpHost" class="mono-input" value="smtp.gmail.com" />
-                    </div>
-                    <div class="field-block">
-                        <label for="cfgSmtpPort">Porta TLS</label>
-                        <input type="number" id="cfgSmtpPort" class="mono-input" value="587" />
-                    </div>
+                <div class="field-block mb-16">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="cfgAutoCheck" checked />
+                        <span>Manter verificação automática ativa em segundo plano</span>
+                    </label>
                 </div>
 
-                <hr class="hairline-divider" />
-
-                <div class="grid-2">
-                    <div class="field-block">
-                        <label for="cfgCheckInterval">Intervalo de Coleta em Background (minutos)</label>
-                        <div class="dual-numeric-control">
-                            <input type="range" id="cfgIntervalSlider" min="5" max="240" step="5" value="30" />
-                            <input type="number" min="1" max="1440" id="cfgCheckInterval" class="mono-input" value="30" />
+                <!-- Opcional: Servidor SMTP próprio colapsado para não poluir a tela -->
+                <details class="advanced-smtp-details">
+                    <summary class="mono-text">Configuração avançada de servidor SMTP (opcional)</summary>
+                    <div class="advanced-smtp-body">
+                        <div class="grid-2">
+                            <div class="field-block">
+                                <label for="cfgSmtpEmail">Remetente SMTP</label>
+                                <input type="email" id="cfgSmtpEmail" placeholder="Opcional" />
+                            </div>
+                            <div class="field-block">
+                                <label for="cfgSmtpPassword">Senha de App</label>
+                                <input type="password" id="cfgSmtpPassword" class="mono-input" placeholder="Opcional" />
+                            </div>
+                        </div>
+                        <div class="grid-2 mt-14">
+                            <div class="field-block">
+                                <label for="cfgSmtpHost">Host SMTP</label>
+                                <input type="text" id="cfgSmtpHost" class="mono-input" value="smtp.gmail.com" />
+                            </div>
+                            <div class="field-block">
+                                <label for="cfgSmtpPort">Porta TLS</label>
+                                <input type="number" id="cfgSmtpPort" class="mono-input" value="587" />
+                            </div>
                         </div>
                     </div>
-                    <div class="field-block checkbox-align">
-                        <label class="toggle-row">
-                            <input type="checkbox" id="cfgAutoCheck" checked />
-                            <span>Executar worker de coleta automaticamente em background</span>
-                        </label>
-                    </div>
-                </div>
+                </details>
 
                 <div class="modal-footer mt-24">
                     <button type="button" class="btn btn-secondary fx-ripple" onclick="triggerTestEmail()">
-                        Disparar E-mail de Teste
+                        Enviar Teste Agora
                     </button>
-                    <button type="submit" class="btn btn-primary fx-shine fx-ripple">Salvar Parâmetros</button>
+                    <button type="submit" class="btn btn-primary fx-shine fx-ripple">Salvar E-mail</button>
                 </div>
             </form>
         </div>
@@ -437,6 +489,14 @@
             </div>
         </div>
     </div>
+
+    <footer class="site-footer">
+        <div class="container footer-inner">
+            <span class="mono-text">PRICERADAR · v1.0</span>
+            <span>Flask · BeautifulSoup · SQLite · Chart.js</span>
+            <a href="https://github.com/Luskinha01-cyber/PriceRadar" target="_blank" rel="noopener noreferrer">Código no GitHub &rarr;</a>
+        </div>
+    </footer>
 
     <!-- Container de Notificações (Toasts Minimalistas) -->
     <div id="toastContainer" class="toast-stack"></div>

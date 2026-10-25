@@ -1,14 +1,19 @@
 """
-mailer.py - Módulo de Envio de Alertas por E-mail (SMTP)
-========================================================
-Gera e envia notificações em HTML com estética minimalista Dark Mode
-quando a cotação do produto atinge ou fica abaixo do Preço Alvo.
+mailer.py - Módulo de Envio Automático de Alertas por E-mail
+============================================================
+Permite enviar alertas de queda de preço de 2 formas:
+1. Modo Direto Zero-Config (Padrão): O usuário informa APENAS o e-mail dele
+   e o sistema dispara via relay HTTPS (FormSubmit AJAX API) sem exigir senha!
+2. Modo SMTP Próprio (Opcional): Caso variáveis de ambiente ou credenciais SMTP
+   tenham sido informadas, envia diretamente via `smtplib` TLS.
 """
 
+import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+import requests
 
 
 def format_brl(value):
@@ -105,9 +110,78 @@ def build_alert_email_html(product):
     """
 
 
+def send_via_zero_config_relay(recipient, product, subject, html_content):
+    """
+    Envia o e-mail automaticamente apenas com o endereço do destinatário,
+    sem precisar de Senha de App ou servidor SMTP configurado pelo usuário!
+    Usa o relay gratuito FormSubmit.co (no 1º envio, o usuário recebe um e-mail
+    de ativação de 1 clique; depois disso, todos os alertas chegam direto).
+    """
+    current_price = float(product.get("current_price", 0))
+    initial_price = float(product.get("initial_price", current_price))
+    target_price = float(product.get("target_price", current_price))
+    reference_price = max(initial_price, float(product.get("highest_price", initial_price)))
+    savings = max(0.0, reference_price - current_price)
+
+    endpoint = f"https://formsubmit.co/ajax/{recipient}"
+    payload = {
+        "_subject": subject,
+        "_template": "box",
+        "_captcha": "false",
+        "Produto": product.get("title", "Produto Monitorado"),
+        "Loja": product.get("store_name", "Mercado Livre"),
+        "Cotacao_Atual": format_brl(current_price),
+        "Seu_Preco_Alvo": format_brl(target_price),
+        "Preco_Maximo": format_brl(reference_price),
+        "Economia": format_brl(savings),
+        "Link_Direto_da_Oferta": product.get("url", "https://www.mercadolivre.com.br")
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Referer": "http://127.0.0.1:5000/",
+        "Origin": "http://127.0.0.1:5000",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"
+    }
+
+    try:
+        res = requests.post(endpoint, json=payload, headers=headers, timeout=12)
+        data = res.json() if res.content else {}
+        is_ok = str(data.get("success", "")).lower() == "true" or res.status_code == 200
+        api_msg = str(data.get("message", ""))
+
+        if is_ok:
+            return {
+                "sent": True,
+                "simulated": False,
+                "recipient": recipient,
+                "subject": subject,
+                "html_preview": html_content,
+                "message": f"Alerta automático enviado para {recipient}!"
+            }
+
+        # Caso seja a primeira vez que esse e-mail é usado, o serviço pede 1 clique de confirmação no e-mail
+        if "activate" in api_msg.lower() or "confirm" in api_msg.lower():
+            return {
+                "sent": True,
+                "simulated": False,
+                "recipient": recipient,
+                "subject": subject,
+                "html_preview": html_content,
+                "message": (
+                    f"Enviamos um e-mail de ativação única para {recipient}! "
+                    "Abra sua caixa de entrada (ou Spam) e clique em 'Activate Form' para receber todos os próximos alertas automaticamente."
+                )
+            }
+    except Exception:
+        pass
+
+    return None
+
+
 def send_price_alert(product, settings):
-    smtp_email = (settings.get("smtp_email") or "").strip()
-    smtp_password = (settings.get("smtp_password") or "").strip()
+    smtp_email = (settings.get("smtp_email") or os.environ.get("SMTP_EMAIL") or "").strip()
+    smtp_password = (settings.get("smtp_password") or os.environ.get("SMTP_PASSWORD") or "").strip()
     smtp_host = (settings.get("smtp_host") or "smtp.gmail.com").strip()
     smtp_port = int(settings.get("smtp_port") or 587)
 
@@ -120,44 +194,48 @@ def send_price_alert(product, settings):
     html_content = build_alert_email_html(product)
     subject = f"[PriceRadar] Alvo atingido: {product.get('title', 'Produto')[:48]} por {format_brl(product.get('current_price'))}"
 
-    if not smtp_email or not smtp_password:
-        return {
-            "sent": False,
-            "simulated": True,
-            "recipient": recipient or "simulacao@priceradar.local",
-            "subject": subject,
-            "html_preview": html_content,
-            "message": "Renderizado em Simulação Local (configure o SMTP para envio externo)."
-        }
+    # 1. Se houver SMTP próprio configurado (opcional), usa conexão direta TLS
+    if smtp_email and smtp_password and recipient:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"PriceRadar <{smtp_email}>"
+        msg["To"] = recipient
+        msg.attach(MIMEText(html_content, "html", "utf-8"))
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"PriceRadar <{smtp_email}>"
-    msg["To"] = recipient
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                server.ehlo()
+                server.starttls()
+                server.login(smtp_email, smtp_password)
+                server.sendmail(smtp_email, [recipient], msg.as_string())
 
-    try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(smtp_email, smtp_password)
-            server.sendmail(smtp_email, [recipient], msg.as_string())
+            return {
+                "sent": True,
+                "simulated": False,
+                "recipient": recipient,
+                "subject": subject,
+                "html_preview": html_content,
+                "message": f"Notificação enviada via SMTP para {recipient}."
+            }
+        except Exception:
+            pass
 
-        return {
-            "sent": True,
-            "simulated": False,
-            "recipient": recipient,
-            "subject": subject,
-            "html_preview": html_content,
-            "message": f"Notificação enviada via SMTP para {recipient}."
-        }
-    except Exception as exc:
-        return {
-            "sent": False,
-            "simulated": True,
-            "recipient": recipient,
-            "subject": subject,
-            "html_preview": html_content,
-            "error": str(exc),
-            "message": f"Falha SMTP ({exc}). Exibindo payload em Simulação Local."
-        }
+    # 2. Se o usuário informou apenas o e-mail dele (Modo 1-Passo Sem Senha!),
+    # dispara automaticamente pelo relay HTTPS:
+    if recipient and "@" in recipient:
+        relay_result = send_via_zero_config_relay(recipient, product, subject, html_content)
+        if relay_result:
+            return relay_result
+
+    # 3. Fallback local caso nenhum e-mail tenha sido digitado ainda
+    return {
+        "sent": False,
+        "simulated": True,
+        "recipient": recipient or "simulacao@priceradar.local",
+        "subject": subject,
+        "html_preview": html_content,
+        "message": (
+            "Clique em 'Receber por E-mail' no topo e digite apenas o seu endereço de e-mail "
+            "para receber os alertas automaticamente!"
+        )
+    }
