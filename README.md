@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./static/img/logo-full.png" alt="PriceRadar Logo" width="340" />
+
 # PriceRadar
 
 **Sistema Multi-Usuário de Monitoramento de Preços, Série Histórica e Alertas Automatizados via Web Scraping**

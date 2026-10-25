@@ -31,7 +31,7 @@ from collections import defaultdict, deque
 from datetime import timedelta
 from functools import wraps
 
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, send_from_directory
 
 import database
 import scraper
@@ -251,6 +251,11 @@ def check_single_product_and_notify(product_id, forced_price=None, force_alert=F
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, "static", "img"), "favicon.png", mimetype="image/png")
 
 
 @app.route("/api/state", methods=["GET"])
