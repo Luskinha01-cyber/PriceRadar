@@ -68,9 +68,17 @@ def load_secret_key():
             if stored:
                 return stored
 
+    if os.environ.get("VERCEL"):
+        import hashlib
+        seed = os.environ.get("VERCEL_PROJECT_ID") or os.environ.get("VERCEL_URL") or "priceradar-vercel-default-seed"
+        return hashlib.sha256(f"priceradar-secret-{seed}".encode("utf-8")).hexdigest()
+
     new_key = secrets.token_hex(32)
-    with open(key_path, "w", encoding="utf-8") as key_file:
-        key_file.write(new_key)
+    try:
+        with open(key_path, "w", encoding="utf-8") as key_file:
+            key_file.write(new_key)
+    except OSError:
+        pass
     return new_key
 
 
@@ -536,8 +544,9 @@ def background_price_monitor():
             print(f"[Monitor Automático] Aviso: {exc.__class__.__name__}")
 
 
-monitor_thread = threading.Thread(target=background_price_monitor, daemon=True)
-monitor_thread.start()
+if not os.environ.get("VERCEL"):
+    monitor_thread = threading.Thread(target=background_price_monitor, daemon=True)
+    monitor_thread.start()
 
 
 if __name__ == "__main__":

@@ -15,7 +15,12 @@ import os
 from datetime import datetime, timedelta
 
 # Caminho do arquivo do banco de dados na mesma pasta do projeto
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "priceradar.db")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.environ.get("VERCEL") or not os.access(_BASE_DIR, os.W_OK):
+    import tempfile
+    DB_PATH = os.path.join(tempfile.gettempdir(), "priceradar.db")
+else:
+    DB_PATH = os.path.join(_BASE_DIR, "priceradar.db")
 
 
 def get_connection():
